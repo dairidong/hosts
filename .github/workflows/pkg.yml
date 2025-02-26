@@ -36,10 +36,10 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: build_x64
+          name: build_x64-${{ matrix.pkg_target_without_node }}  # 唯一构件名称
           path: |
-            hosts-server-pkg-*.tar.gz
-            hosts-server-pkg-*.zip
+            hosts-server-pkg-${{ matrix.pkg_target_without_node }}.*
+          if-no-files-found: error  # 确保文件存在
 
   build_arm_executables:
     runs-on: ubuntu-latest
@@ -57,10 +57,8 @@ jobs:
         uses: docker/setup-qemu-action@v1
       - run: |
           set -xeu
-          # NOTE: node:16 image causes an error "glob error [Error: EACCES: permission denied, scandir '/root/.npm/_logs'] { ..."
           docker run --rm -i -v $PWD:/app --platform=linux/arm64/v8 node:14 bash << 'EOF'
           set -xeu
-          # Install ldid for macos-arm64 signing
           curl -LO https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus2/ldid_linux_aarch64
           chmod +x ldid_linux_aarch64
           mv ./ldid_linux_aarch64 /usr/local/bin/ldid
@@ -79,37 +77,31 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: build_arm
+          name: build_arm-${{ matrix.pkg_target_without_node }}  # 唯一构件名称
           path: |
-            hosts-server-pkg-*.tar.gz
-            hosts-server-pkg-*.zip
+            hosts-server-pkg-${{ matrix.pkg_target_without_node }}.*
+          if-no-files-found: error
 
+  # 测试作业需要适配新构件名称
   macos_operational_test:
     runs-on: macos-latest
     needs: build_x64_executables
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: build_x64
+          name: build_x64-mac-x64
           path: .
       - name: Unarchive tar.gz
         run: tar xvf hosts-server-pkg-mac-x64.tar.gz
       - name: Operational test
         run: |
           set -xeu
-          # Run a server in background
           ./hosts-server-pkg-mac-x64/hosts-server --port=8080 &> ./hosts-server.log &
-          # Get server PID
           server_pid=$!
-          # Wait for server running
           sleep 10
-          # Get data as a file
           curl localhost:8080 > /tmp/hosts.txt
-          # Print downloaded file
-          cat  /tmp/hosts.txt
-          # Print server's log
+          cat /tmp/hosts.txt
           cat ./hosts-server.log
-          # Stop the server
           kill $server_pid
 
   windows_operational_test:
@@ -118,22 +110,17 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: build_x64
+          name: build_x64-win-x64
           path: .
       - name: Unarchive zip
         run: unzip hosts-server-pkg-win-x64.zip
       - name: Operational test
         run: |
-          # Run a server in background
           $args = @("--port=8080")
           $server_pid = Start-Process -PassThru -FilePath .\hosts-server-pkg-win-x64\hosts-server.exe -ArgumentList $args | foreach { $_.Id }
-          # Wait for server running
           sleep 10
-          # Get data as a file
           curl localhost:8080 > C:\Temp\hosts.txt
-          # Print downloaded file
-          cat  C:\Temp\hosts.txt
-          # Stop the server
+          cat C:\Temp\hosts.txt
           kill $server_pid
 
   linux_operational_test:
@@ -142,26 +129,19 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: build_x64
+          name: build_x64-linuxstatic-x64
           path: .
       - name: Unarchive tar.gz
         run: tar xvf hosts-server-pkg-linuxstatic-x64.tar.gz
       - name: Operational test
         run: |
           set -xeu
-          # Run a server in background
           ./hosts-server-pkg-linuxstatic-x64/hosts-server --port=8080 &> ./hosts-server.log &
-          # Get server PID
           server_pid=$!
-          # Wait for server running
           sleep 10
-          # Get data as a file
           curl localhost:8080 > /tmp/hosts.txt
-          # Print downloaded file
-          cat  /tmp/hosts.txt
-          # Print server's log
+          cat /tmp/hosts.txt
           cat ./hosts-server.log
-          # Stop the server
           kill $server_pid
 
   release_executables:
@@ -173,26 +153,26 @@ jobs:
       - build_arm_executables
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download x64 artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: build_x64
-          path: .
-      - uses: actions/download-artifact@v4
+          pattern: build_x64-*
+          path: build_x64
+          merge-multiple: true
+      - name: Download arm artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: build_arm
-          path: .
+          pattern: build_arm-*
+          path: build_arm
+          merge-multiple: true
       - run: |
           set -xeu
-          mkdir ./publish_dir
-          mv hosts-server-pkg-* ./publish_dir
-          # Show and create checksums
+          mkdir -p publish_dir
+          mv build_x64/* build_arm/* publish_dir/ || true
           (cd publish_dir && sha256sum * | tee /dev/stderr > sha256sums.txt)
-
-      # create release
-      - name: release
+      - name: Create release
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: "publish_dir/**"
+          files: publish_dir/*
         env:
-          GITHUB_TOKEN: ${{ secrets.COMMIT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
